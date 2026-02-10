@@ -99,6 +99,8 @@ class FeatExtractor:
         val_stride = getattr(args, 'val_stride', 30)
         sensor_width = getattr(args, 'sensor_width', 640)
         sensor_height = getattr(args, 'sensor_height', 480)
+        label_width = getattr(args, 'label_width', 640)
+        label_height = getattr(args, 'label_height', 480)
         temp_subsample_factor = getattr(args, 'temp_subsample_factor', 1.0)
 
         # Downsampled sensor dimensions
@@ -169,7 +171,7 @@ class FeatExtractor:
                         h5_path, label_path, spatial_factor,
                         n_time_bins, seq_length, stride,
                         sensor_width, sensor_height,
-                        ds_width, ds_height,
+                        ds_width, ds_height, label_width, label_height,
                         temp_subsample_factor
                     )
                     if features is not None and len(features) > 0:
@@ -246,15 +248,32 @@ class FeatExtractor:
     def _process_recording(self, h5_path, label_path, spatial_factor,
                            n_time_bins, seq_length, stride,
                            sensor_width, sensor_height,
-                           ds_width, ds_height,
+                           ds_width, ds_height, label_width, label_height,
                            temp_subsample_factor):
         """Process a single recording: events -> voxel grid sequences."""
-        # Load events from H5
+        # Load events from H5.
+        # Supports both:
+        # 1) Kaggle/JaneEye schema: dataset "events" with fields t,x,y,p
+        # 2) Legacy schema: datasets "t", "x", "y", "p"
         with h5py.File(h5_path, 'r') as hf:
-            events_t = np.array(hf['t'], dtype=np.float64)
-            events_x = np.array(hf['x'], dtype=np.float64)
-            events_y = np.array(hf['y'], dtype=np.float64)
-            events_p = np.array(hf['p'], dtype=np.float64)
+            if 'events' in hf:
+                events = np.array(hf['events'])
+                if events.dtype.names is not None:
+                    events_t = np.array(events['t'], dtype=np.float64)
+                    events_x = np.array(events['x'], dtype=np.float64)
+                    events_y = np.array(events['y'], dtype=np.float64)
+                    events_p = np.array(events['p'], dtype=np.float64)
+                else:
+                    events = np.array(events, dtype=np.float64)
+                    events_t = events[:, 0]
+                    events_x = events[:, 1]
+                    events_y = events[:, 2]
+                    events_p = events[:, 3]
+            else:
+                events_t = np.array(hf['t'], dtype=np.float64)
+                events_x = np.array(hf['x'], dtype=np.float64)
+                events_y = np.array(hf['y'], dtype=np.float64)
+                events_p = np.array(hf['p'], dtype=np.float64)
 
         if len(events_t) == 0:
             return None, None
@@ -263,13 +282,14 @@ class FeatExtractor:
         events_x = events_x * spatial_factor
         events_y = events_y * spatial_factor
 
-        # Convert polarity: 0/1 -> -1/+1
-        events_p = events_p * 2 - 1
+        # Convert polarity to -1/+1 if needed.
+        if events_p.min() >= 0 and events_p.max() <= 1:
+            events_p = events_p * 2 - 1
+        else:
+            events_p = np.where(events_p > 0, 1.0, -1.0)
 
         # Load labels
-        labels = self._load_labels(label_path, spatial_factor,
-                                   sensor_width, sensor_height,
-                                   ds_width, ds_height)
+        labels = self._load_labels(label_path, ds_width, ds_height, label_width, label_height)
         if labels is None or len(labels) == 0:
             return None, None
 
@@ -330,9 +350,7 @@ class FeatExtractor:
 
         return features, targets
 
-    def _load_labels(self, label_path, spatial_factor,
-                     sensor_width, sensor_height,
-                     ds_width, ds_height):
+    def _load_labels(self, label_path, ds_width, ds_height, label_width, label_height):
         """Load and process labels from label.txt.
 
         Returns:
@@ -356,9 +374,12 @@ class FeatExtractor:
                     y = float(parts[1])
                     close = float(parts[2]) if len(parts) >= 3 else 0.0
 
-                    # Scale by spatial factor
-                    x *= spatial_factor
-                    y *= spatial_factor
+                    # Labels are in source image coordinates (default 640x480).
+                    # Map them directly into downsampled feature coordinates.
+                    x = x * (float(ds_width) / float(label_width))
+                    y = y * (float(ds_height) / float(label_height))
+                    x = np.clip(x, 0, ds_width - 1)
+                    y = np.clip(y, 0, ds_height - 1)
 
                     # Normalize to [0, 1]
                     x_norm = x / ds_width

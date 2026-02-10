@@ -40,21 +40,34 @@ class DataPrepare:
         records = []
         for split, recording_ids in split_files.items():
             for rec_id in recording_ids:
-                # Expected path: {data_dir}/train/{subject}_{session}/{subject}_{session}.h5
-                # or: {data_dir}/{subject}_{session}/{subject}_{session}.h5
+                # Kaggle/JaneEye layout:
+                #   {data_dir}/train/{id}/{id}.h5  (train and val ids)
+                #   {data_dir}/test/{id}/{id}.h5   (test ids)
+                # Legacy layout:
+                #   {data_dir}/{id}/{id}.h5
                 h5_path = None
                 label_path = None
 
+                split_dir = 'test' if split == 'test' else 'train'
                 # Try multiple directory structures
                 candidates = [
-                    os.path.join(self.dataset_path, 'train', rec_id, f'{rec_id}.h5'),
+                    os.path.join(self.dataset_path, split_dir, rec_id, f'{rec_id}.h5'),
                     os.path.join(self.dataset_path, rec_id, f'{rec_id}.h5'),
                     os.path.join(self.dataset_path, 'data', rec_id, f'{rec_id}.h5'),
                 ]
                 for candidate in candidates:
                     if os.path.exists(candidate):
                         h5_path = candidate
-                        label_path = os.path.join(os.path.dirname(candidate), 'label.txt')
+                        label_candidates = [
+                            os.path.join(os.path.dirname(candidate), 'label.txt'),
+                            os.path.join(os.path.dirname(candidate), 'label_zeros.txt'),
+                        ]
+                        for lpath in label_candidates:
+                            if os.path.exists(lpath):
+                                label_path = lpath
+                                break
+                        if label_path is None:
+                            label_path = label_candidates[0]
                         break
 
                 if h5_path is None:

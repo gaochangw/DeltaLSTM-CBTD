@@ -29,6 +29,10 @@ def add_args(parser):
                         help='Stride for val/test sequence slicing')
     parser.add_argument('--sensor_width', default=240, type=int, help='Event camera sensor width')
     parser.add_argument('--sensor_height', default=180, type=int, help='Event camera sensor height')
+    parser.add_argument('--label_width', default=640, type=int,
+                        help='Label coordinate width before downsampling')
+    parser.add_argument('--label_height', default=480, type=int,
+                        help='Label coordinate height before downsampling')
     parser.add_argument('--pixel_tolerances', default='5,10,15', type=str,
                         help='Comma-separated pixel tolerances for p-accuracy')
     parser.add_argument('--temp_subsample_factor', default=1.0, type=float,

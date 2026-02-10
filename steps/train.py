@@ -321,6 +321,11 @@ def main(args):
         # -----------
         # Train
         # -----------
+        train_shuffle_type = 'random'
+        # JaneEye-Net paper setup uses batch_size=1 with temporal continuity.
+        if args.dataset_name == 'threeet' and args.hid_type == 'JaneEyeNet' and args.batch_size == 1:
+            train_shuffle_type = 'high_throughput'
+
         net, _, train_stat = net_train(args,
                                        net=net,
                                        batch_size=args.batch_size,
@@ -329,7 +334,7 @@ def main(args):
                                        criterion=criterion,
                                        dataloader=dataloader,
                                        epoch=epoch,
-                                       shuffle_type='random',
+                                       shuffle_type=train_shuffle_type,
                                        enable_gauss=0)
 
         # Process Network after training per epoch
