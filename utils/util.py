@@ -79,6 +79,10 @@ def get_dataset_path(args):
         print("Preparing TIDIGITS Dataset...")
         dataset_name = 'tidigits'
         testset_name = None
+    elif args.dataset_name == 'threeet':
+        print("Preparing 3ET+ Event-Based Eye Tracking Dataset...")
+        dataset_name = '3et_data'
+        testset_name = None
     else:
         raise RuntimeError('Dataset not supported.')
 
@@ -91,6 +95,17 @@ def get_dataset_path(args):
             data_dir = '/DATA/'
 
     dataset_path = os.path.join(data_dir, dataset_name)
+    # For 3ET+: if data_dir contains H5 subdirectories directly, use it as-is
+    if args.dataset_name == 'threeet' and data_dir is not None:
+        if os.path.isdir(data_dir):
+            dataset_path = data_dir
+    if args.dataset_name in ['gscdv1', 'gscdv2'] and data_dir is not None:
+        direct_val = os.path.join(data_dir, 'validation_list.txt')
+        direct_test = os.path.join(data_dir, 'testing_list.txt')
+        if os.path.exists(direct_val) and os.path.exists(direct_test):
+            dataset_path = data_dir
+        elif os.path.basename(os.path.normpath(data_dir)) == dataset_name:
+            dataset_path = data_dir
     if testset_name is not None:
         testset_path = data_dir + testset_name
     else:

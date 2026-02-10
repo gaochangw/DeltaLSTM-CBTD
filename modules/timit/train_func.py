@@ -18,6 +18,10 @@ def get_batch_data(args, dict_batch_array):
     target_lengths = dict_batch_array['target_lengths']
     if args.use_cuda:
         features = features.cuda()
+        targets = targets.cuda()
+        targets_metric = targets_metric.cuda()
+        feature_lengths = feature_lengths.cuda()
+        target_lengths = target_lengths.cuda()
 
     dict_batch_tensor = {'features': features, 'feature_lengths': feature_lengths, 'targets': targets,
                          'targets_metric': targets_metric, 'target_lengths': target_lengths}

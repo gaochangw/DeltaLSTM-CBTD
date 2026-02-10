@@ -12,6 +12,32 @@ import importlib
 from torch.nn import CTCLoss
 
 from utils.util import gen_paths, count_net_params
+from utils.training_plotter import TrainingPlotter
+
+# Import Excel logger and model stats
+try:
+    from utils.excel_logger import ExcelLogger, create_excel_logger
+    EXCEL_LOGGER_AVAILABLE = True
+except ImportError:
+    EXCEL_LOGGER_AVAILABLE = False
+
+try:
+    from utils.json_logger import JsonLogger
+    JSON_LOGGER_AVAILABLE = True
+except ImportError:
+    JSON_LOGGER_AVAILABLE = False
+
+try:
+    from utils.model_stats import get_model_summary_dict
+    MODEL_STATS_AVAILABLE = True
+except ImportError:
+    MODEL_STATS_AVAILABLE = False
+
+try:
+    from utils.msq_regularizer import compute_lsb_penalty
+    MSQ_AVAILABLE = True
+except ImportError:
+    MSQ_AVAILABLE = False
 
 old_repr = torch.Tensor.__repr__
 
@@ -60,12 +86,24 @@ def main(args):
     gen_meter_args = module_metric.gen_meter_args
 
     # Select Loss function
-    dict_loss = {'crossentropy': nn.CrossEntropyLoss(), 'ctc': CTCLoss(blank=0, reduction='sum', zero_infinity=True),
+    dict_loss = {'crossentropy': nn.CrossEntropyLoss(), 'ce': nn.CrossEntropyLoss(),
+                 'ctc': CTCLoss(blank=0, reduction='sum', zero_infinity=True),
                  'mse': nn.MSELoss(), 'l1': nn.L1Loss()}
+    # Add weighted MSE / RMSE for 3ET+ regression (aspect ratio compensation)
+    if args.loss in ('weighted_mse', 'weighted_rmse'):
+        spatial_factor = getattr(args, 'spatial_factor', 0.125)
+        sensor_w = getattr(args, 'sensor_width', 640) * spatial_factor
+        sensor_h = getattr(args, 'sensor_height', 480) * spatial_factor
+        loss_weights = torch.tensor([sensor_w / sensor_h, 1.0])
+        from utils.weighted_mse import weighted_MSELoss
+        dict_loss['weighted_mse'] = weighted_MSELoss(weights=loss_weights)
+        if args.loss == 'weighted_rmse':
+            from utils.weighted_mse import weighted_RMSELoss
+            dict_loss['weighted_rmse'] = weighted_RMSELoss(weights=loss_weights)
     loss_func_name = args.loss
     try:
         criterion = dict_loss[loss_func_name]
-    except AttributeError:
+    except (AttributeError, KeyError):
         raise AttributeError('Please use a valid loss function. See modules/argument.py.')
 
     print("::: Phase:   ", args.phase)
@@ -73,16 +111,22 @@ def main(args):
     print("::: Loading: ", args.valfile)
     print("::: Loading: ", args.testfile)
 
-    # Find Available GPUs
-    if torch.cuda.is_available():
+    # Find Available Accelerators
+    if torch.cuda.is_available() and args.use_cuda:
         torch.cuda.set_device(args.gpu_device)
         idx_gpu = torch.cuda.current_device()
         name_gpu = torch.cuda.get_device_name(idx_gpu)
         print("::: Available GPUs: %s" % (torch.cuda.device_count()))
         print("::: Using GPU %s:   %s" % (idx_gpu, name_gpu))
+        args.device = torch.device('cuda')
+        print("--------------------------------------------------------------------")
+    elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+        print("::: Using Apple MPS (Metal Performance Shaders)")
+        args.device = torch.device('mps')
         print("--------------------------------------------------------------------")
     else:
-        print("::: Available GPUs: None")
+        print("::: Available GPUs: None, using CPU")
+        args.device = torch.device('cpu')
         print("--------------------------------------------------------------------")
 
     # Reproducibility
@@ -122,7 +166,18 @@ def main(args):
 
     # Get parameter count
     n_param = count_net_params(net)
-    print("::: Number of Parameters: ", n_param)
+
+    # Print model configuration and analysis
+    try:
+        print_training_header = module_log.print_training_header
+        print_model_analysis = module_log.print_model_analysis
+        print_training_header(args, n_features, n_classes, n_param)
+        # Estimate sequence length based on dataset
+        seq_len = 30 if args.dataset_name == 'threeet' else (98 if args.dataset_name == 'gscdv2' else 777)
+        print_model_analysis(net, args, n_features, seq_len=seq_len, device='cpu')
+    except (AttributeError, TypeError):
+        # Fall back to simple print if module doesn't have the functions
+        print("::: Number of Parameters: ", n_param)
 
     ###########################################################################################################
     # Save & Log Naming Convention
@@ -144,6 +199,61 @@ def main(args):
     # Logger
     logger = pandaslogger.PandasLogger(logfile_hist)
 
+    # Training Plotter
+    plotter = TrainingPlotter(
+        plot_dir='./plot',
+        model_id=model_id,
+        dataset_name=args.dataset_name,
+        phase=args.phase
+    )
+    print("::: Plot Path: ", plotter.plot_dir)
+
+    # Excel Logger
+    excel_logger = None
+    if EXCEL_LOGGER_AVAILABLE:
+        try:
+            excel_logger = ExcelLogger(
+                log_dir=log_dir_hist,
+                model_id=model_id,
+                dataset_name=args.dataset_name,
+                phase=args.phase
+            )
+            excel_logger.set_model_config(args, n_features, n_classes)
+
+            # Add model stats if available
+            if MODEL_STATS_AVAILABLE:
+                seq_len = 30 if args.dataset_name == 'threeet' else (98 if args.dataset_name == 'gscdv2' else 777)
+                model_stats = get_model_summary_dict(net, seq_len, n_features)
+                excel_logger.set_model_stats(model_stats)
+
+            print("::: Excel Log: ", excel_logger.get_path())
+        except Exception as e:
+            print(f"::: Excel logger failed to initialize: {e}")
+            excel_logger = None
+
+    # JSON Logger (for easy parsing)
+    json_logger = None
+    if JSON_LOGGER_AVAILABLE:
+        try:
+            json_logger = JsonLogger(
+                log_dir=log_dir_hist,
+                model_id=model_id,
+                dataset_name=args.dataset_name,
+                phase=args.phase
+            )
+            json_logger.set_config(args, n_features, n_classes)
+
+            # Add model stats if available
+            if MODEL_STATS_AVAILABLE:
+                seq_len = 30 if args.dataset_name == 'threeet' else (98 if args.dataset_name == 'gscdv2' else 777)
+                model_stats = get_model_summary_dict(net, seq_len, n_features)
+                json_logger.set_complexity(model_stats)
+
+            print("::: JSON Log: ", json_logger.json_path)
+        except Exception as e:
+            print(f"::: JSON logger failed to initialize: {e}")
+            json_logger = None
+
     ###########################################################################################################
     # Settings
     ###########################################################################################################
@@ -158,21 +268,28 @@ def main(args):
             print('::: Loading pretrained model: ', args.pretrain_model)
             net = util.load_model(net, args.pretrain_model, args.use_cuda, args.gpu_device)
 
-    # Use CUDA
-    if args.use_cuda:
-        net = net.cuda()
+    # Move model to device (CUDA, MPS, or CPU)
+    net = net.to(args.device)
+
+    # Move criterion to device (needed for weighted_MSELoss which has buffers)
+    if hasattr(criterion, 'to'):
+        criterion = criterion.to(args.device)
 
     # Create Optimizer
     optimizer = create_optimizer(args, net)
 
     # Setup Learning Rate Scheduler
-    lr_scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer=optimizer,
-                                                        mode='min',
-                                                        factor=args.decay_factor,
-                                                        patience=args.patience,
-                                                        verbose=True,
-                                                        threshold=1e-4,
-                                                        min_lr=args.lr_end)
+    lr_scheduler_type = getattr(args, 'lr_scheduler', 'plateau')
+    if lr_scheduler_type == 'exponential':
+        lr_gamma = getattr(args, 'lr_gamma', 0.98)
+        lr_scheduler = optim.lr_scheduler.ExponentialLR(optimizer=optimizer, gamma=lr_gamma)
+    else:
+        lr_scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer=optimizer,
+                                                            mode='min',
+                                                            factor=args.decay_factor,
+                                                            patience=args.patience,
+                                                            threshold=1e-4,
+                                                            min_lr=args.lr_end)
 
     # Initialize Network Parameters
     if args.phase == 'pretrain':
@@ -190,9 +307,14 @@ def main(args):
     # Timer
     start_time = time.time()
 
+    # Determine number of epochs based on phase
+    n_epochs = args.n_epochs
+    if args.phase == 'retrain':
+        n_epochs = getattr(args, 'n_epochs_retrain', args.n_epochs)
+
     # Epoch loop
     print("Starting training...")
-    for epoch in range(args.n_epochs):
+    for epoch in range(n_epochs):
         # Update Alpha
         alpha = 1 if args.phase == 'retrain' else min(epoch / (args.alpha_anneal_epoch - 1), 1.0)
 
@@ -262,6 +384,17 @@ def main(args):
         # Write Log
         logger.write_log(log_stat)
 
+        # Update Excel Logger
+        if excel_logger is not None:
+            excel_logger.add_epoch(log_stat)
+
+        # Update JSON Logger
+        if json_logger is not None:
+            json_logger.add_epoch(log_stat)
+
+        # Update Plots
+        plotter.update(log_stat)
+
         # Print
         print_log(args, log_stat, train_stat, val_stat, test_stat)
 
@@ -279,18 +412,52 @@ def main(args):
         ###########################################################################################################
         # Learning Rate Schedule
         ###########################################################################################################
-        # Schedule at the beginning of retrain
         if args.lr_schedule:
-            if args.phase == 'retrain':
-                lr_scheduler.step(val_stat['lr_criterion'])
-            # Schedule after the alpha annealing is over
-            elif args.cbtd:
-                if epoch >= args.alpha_anneal_epoch:
-                    lr_scheduler.step(val_stat['lr_criterion'])
+            if lr_scheduler_type == 'exponential':
+                # ExponentialLR steps every epoch unconditionally
+                lr_scheduler.step()
             else:
-                lr_scheduler.step(val_stat['lr_criterion'])
+                # ReduceLROnPlateau: schedule at the beginning of retrain
+                if args.phase == 'retrain':
+                    lr_scheduler.step(val_stat['lr_criterion'])
+                # Schedule after the alpha annealing is over
+                elif args.cbtd:
+                    if epoch >= args.alpha_anneal_epoch:
+                        lr_scheduler.step(val_stat['lr_criterion'])
+                else:
+                    lr_scheduler.step(val_stat['lr_criterion'])
+
+    # Save final plot history
+    plotter.save_history_csv()
+
+    # Save Excel log
+    if excel_logger is not None:
+        try:
+            excel_path = excel_logger.save()
+            print(f"::: Excel log saved to: {excel_path}")
+        except Exception as e:
+            print(f"::: Failed to save Excel log: {e}")
+
+    # Save JSON log
+    if json_logger is not None:
+        try:
+            json_path = json_logger.save()
+            print(f"::: JSON log saved to: {json_path}")
+        except Exception as e:
+            print(f"::: Failed to save JSON log: {e}")
+
+    # Final sparsity & speedup analysis (uses last epoch's temporal stats)
+    if 'Delta' in args.hid_type and test_stat is not None:
+        try:
+            from utils.sparsity_analysis import analyze_sparsity_scenarios, print_sparsity_speedup_report
+            representation = 'sign_magnitude' if getattr(args, 'bitwave', 0) else 'twos_complement'
+            analysis = analyze_sparsity_scenarios(net, args, temporal_stats=test_stat, representation=representation)
+            print_sparsity_speedup_report(analysis)
+        except Exception as e:
+            print(f"::: Sparsity analysis failed: {e}")
 
     print("Training Completed...                                               ")
+    print(f"::: Plots saved to: {plotter.plot_dir}")
     print(" ")
 
 
@@ -300,7 +467,10 @@ def gen_log_stat(args, epoch, start_time, net, loss_func_name, alpha,
     time_curr = util.timeSince(start_time)
 
     # Get Epoch & Batch Size
-    n_epochs = args.n_epochs
+    if args.phase == 'retrain':
+        n_epochs = getattr(args, 'n_epochs_retrain', args.n_epochs)
+    else:
+        n_epochs = args.n_epochs
     batch_size = args.batch_size
 
     # Get current learning rate
@@ -334,7 +504,10 @@ def gen_log_stat(args, epoch, start_time, net, loss_func_name, alpha,
                 'WEIGHT_DECAY': args.weight_decay,
                 'HID_DROPOUT': args.hid_dropout,
                 'NUM_ARRAY': args.num_array,
-                'NUM_ARRAY_PE': args.num_array_pe
+                'NUM_ARRAY_PE': args.num_array_pe,
+                'MSQ_LAMBDA': getattr(args, 'msq_lambda', 0),
+                'MSQ_K': getattr(args, 'msq_k', 2),
+                'BITWAVE': getattr(args, 'bitwave', 0)
                 }
 
     # Merge stat dicts into the log dict
@@ -358,7 +531,7 @@ def gen_log_stat(args, epoch, start_time, net, loss_func_name, alpha,
             if 'weight' in name:
                 n_nonzero_weight_elem += len(torch.nonzero(param.data))
                 n_weight_elem += param.data.nelement()
-    log_stat['SP_W_RNN'] = 1 - (n_nonzero_weight_elem / n_weight_elem)
+    log_stat['SP_W_RNN'] = 1 - (n_nonzero_weight_elem / n_weight_elem) if n_weight_elem > 0 else 0
 
     # Evaluate FC Extra Layer Weight Sparsity
     log_stat['SP_W_FC'] = 0
@@ -371,6 +544,28 @@ def gen_log_stat(args, epoch, start_time, net, loss_func_name, alpha,
                     n_nonzero_weight_elem += len(torch.nonzero(param.data))
                     n_weight_elem += param.data.nelement()
         log_stat['SP_W_FC'] = 1 - (n_nonzero_weight_elem / n_weight_elem)
+
+    # Bit-level sparsity tracking (both representations, all model types)
+    try:
+        from utils.sparsity_analysis import compute_bit_level_sparsity
+        bw = args.wqi + args.wqf
+        for repr_name, csv_suffix in [('twos_complement', ''), ('sign_magnitude', '_SM')]:
+            rnn_total_bits = 0
+            rnn_nonzero_bits = 0
+            rnn_nz_total_bits = 0
+            rnn_nz_nonzero_bits = 0
+            for name, param in net.named_parameters():
+                if 'rnn' in name and 'weight' in name:
+                    bs = compute_bit_level_sparsity(param.data, args.wqi, args.wqf, repr_name)
+                    rnn_total_bits += bs['total_bits']
+                    rnn_nonzero_bits += bs['nonzero_bits']
+                    rnn_nz_total_bits += bs['nonzero_elements'] * bw
+                    rnn_nz_nonzero_bits += int(bs['avg_nonzero_bits_per_nonzero_element'] * bs['nonzero_elements'])
+            log_stat[f'SP_BIT{csv_suffix}_RNN'] = (rnn_total_bits - rnn_nonzero_bits) / rnn_total_bits if rnn_total_bits > 0 else 0
+            log_stat[f'SP_BIT_NZ{csv_suffix}_RNN'] = (rnn_nz_total_bits - rnn_nz_nonzero_bits) / rnn_nz_total_bits if rnn_nz_total_bits > 0 else 0
+    except Exception:
+        pass
+
     return log_stat
 
 
@@ -459,7 +654,7 @@ def net_eval(args,
             # Increment monitoring variables
             batch_loss = loss.item()
             epoch_loss += batch_loss  # Accumulate loss
-            if reg:
+            if reg is not None and isinstance(loss_reg, torch.Tensor):
                 epoch_regularizer += loss_reg.detach().item()
             n_batches += 1  # Accumulate count so we can calculate mean later
 
@@ -496,6 +691,7 @@ def net_eval(args,
             dict_stats = net.rnn.get_temporal_sparsity()
             stat['sp_dx'] = dict_stats['sparsity_delta_x']
             stat['sp_dh'] = dict_stats['sparsity_delta_h']
+            stat['sp_dxh'] = dict_stats['sparsity_delta']  # Combined delta_xh sparsity
 
             # Evaluate workload
             dict_stats = net.rnn.get_workload()
@@ -541,10 +737,15 @@ def net_train(args,
     # Stat
     epoch_loss = 0
     epoch_regularizer = 0
+    epoch_msq_loss = 0
     n_batches = 0
 
     # Meter data buffer
     dict_meter_data = {'net_out': [], 'net_qout': []}
+
+    # TBPTT configuration
+    tbptt = getattr(args, 'tbptt', 0)
+    use_tbptt = tbptt > 0 and args.hid_type in ('JaneEyeNet', 'RVT')
 
     # Iterate through batches
     batch_iterator = dataloader.iterate(epoch=epoch,
@@ -561,18 +762,125 @@ def net_train(args,
         # Get Batch Data
         dict_batch_tensor = get_batch_data(args, dict_batch_array)
 
-        # Optimization
-        optimizer.zero_grad()
+        if use_tbptt:
+            # TBPTT: split sequence into chunks and train with detached states
+            features = dict_batch_tensor['features']  # (T, B, C, H, W)
+            targets = dict_batch_tensor['targets']    # (B, T, 2)
+            T = features.shape[0]
 
-        # Forward Propagation
-        net_out, _, reg = forward_propagation(net, dict_batch_tensor)
+            state = None
+            chunk_loss_sum = 0
+            chunk_reg_sum = 0
+            chunk_msq_sum = 0
+            chunk_net_outs = []
+            n_chunks = 0
 
-        # Calculate Loss
-        loss, loss_reg = calculate_loss(loss_fn=criterion,
-                                        net_out=net_out,
-                                        dict_targets=dict_batch_tensor,
-                                        reg=reg,
-                                        beta=args.beta)
+            for t_start in range(0, T, tbptt):
+                t_end = min(t_start + tbptt, T)
+                chunk_features = features[t_start:t_end]  # (chunk_T, B, C, H, W)
+                chunk_targets = targets[:, t_start:t_end, :]  # (B, chunk_T, 2)
+
+                # Build sub-batch dict
+                chunk_dict = dict(dict_batch_tensor)
+                chunk_dict['features'] = chunk_features
+                chunk_dict['targets'] = chunk_targets
+                chunk_dict['labels'] = chunk_targets
+
+                optimizer.zero_grad()
+
+                # Forward propagation with state
+                net_out, state, reg = forward_propagation(net, chunk_dict, state)
+
+                # Calculate loss
+                loss, loss_reg = calculate_loss(loss_fn=criterion,
+                                                net_out=net_out,
+                                                dict_targets=chunk_dict,
+                                                reg=reg,
+                                                beta=args.beta)
+
+                # MSQ penalty
+                msq_loss = 0
+                if MSQ_AVAILABLE and getattr(args, 'msq_lambda', 0) > 0 and args.phase == 'pretrain':
+                    msq_lam = args.msq_lambda
+                    if getattr(args, 'msq_anneal', 0):
+                        msq_lam *= min(epoch / max(args.alpha_anneal_epoch - 1, 1), 1.0)
+                    msq_pen = compute_lsb_penalty(
+                        net, qf=args.wqf, k=getattr(args, 'msq_k', 2),
+                        target_layers=getattr(args, 'msq_target', 'rnn'))
+                    msq_loss = msq_lam * msq_pen
+                    loss = loss + msq_loss
+
+                loss.backward()
+
+                if args.clip_grad_norm_max != 0:
+                    nn.utils.clip_grad_norm_(net.parameters(), args.clip_grad_norm_max)
+
+                optimizer.step()
+
+                # Detach state for next chunk (stop gradient flow between chunks)
+                if state is not None:
+                    state = [(h.detach(), c.detach()) for h, c in state]
+
+                chunk_loss_sum += loss.detach().item()
+                if reg is not None and isinstance(loss_reg, torch.Tensor):
+                    chunk_reg_sum += loss_reg.detach().item()
+                if isinstance(msq_loss, torch.Tensor):
+                    chunk_msq_sum += msq_loss.detach().item()
+                chunk_net_outs.append(net_out.detach())
+                n_chunks += 1
+
+                del loss, reg
+
+            # Combine chunk outputs for monitoring
+            net_out = torch.cat(chunk_net_outs, dim=1)  # (B, T, 2)
+            batch_loss = chunk_loss_sum / n_chunks
+            loss_reg = chunk_reg_sum / n_chunks
+            msq_loss = chunk_msq_sum / n_chunks
+
+        else:
+            # Standard training (no TBPTT)
+            # Optimization
+            optimizer.zero_grad()
+
+            # Forward Propagation
+            net_out, _, reg = forward_propagation(net, dict_batch_tensor)
+
+            # Calculate Loss
+            loss, loss_reg = calculate_loss(loss_fn=criterion,
+                                            net_out=net_out,
+                                            dict_targets=dict_batch_tensor,
+                                            reg=reg,
+                                            beta=args.beta)
+
+            # MSQ bit sparsification penalty (pretrain only; retrain focuses on temporal sparsity)
+            msq_loss = 0
+            if MSQ_AVAILABLE and getattr(args, 'msq_lambda', 0) > 0 and args.phase == 'pretrain':
+                msq_lam = args.msq_lambda
+                if getattr(args, 'msq_anneal', 0):
+                    msq_lam *= min(epoch / max(args.alpha_anneal_epoch - 1, 1), 1.0)
+                msq_pen = compute_lsb_penalty(
+                    net, qf=args.wqf, k=getattr(args, 'msq_k', 2),
+                    target_layers=getattr(args, 'msq_target', 'rnn'))
+                msq_loss = msq_lam * msq_pen
+                loss = loss + msq_loss
+
+            # Backward propagation
+            loss.backward()
+
+            # Gradient clipping
+            if args.clip_grad_norm_max != 0:
+                nn.utils.clip_grad_norm_(net.parameters(), args.clip_grad_norm_max)
+
+            # Update parameters
+            optimizer.step()
+
+            # Increment monitoring variables
+            loss.detach()
+            batch_loss = loss.item()
+            if reg is not None and isinstance(loss_reg, torch.Tensor):
+                loss_reg = loss_reg.detach().item()
+
+            del loss, reg
 
         # Get Network Outputs Statistics
         if n_batches == 0:
@@ -586,23 +894,16 @@ def net_train(args,
             if max_cand > net_out_max:
                 net_out_max = max_cand.item()
 
-        # Backward propagation
-        loss.backward()
-
-        # Gradient clipping
-        if args.clip_grad_norm_max != 0:
-            nn.utils.clip_grad_norm_(net.parameters(), args.clip_grad_norm_max)
-
-        # Update parameters
-        optimizer.step()
-
-        # Increment monitoring variables
-        loss.detach()
-        batch_loss = loss.item()
-        epoch_loss += batch_loss  # Accumulate loss
-        if reg is not None:
+        epoch_loss += batch_loss
+        if isinstance(loss_reg, (int, float)):
+            epoch_regularizer += loss_reg
+        elif isinstance(loss_reg, torch.Tensor):
             epoch_regularizer += loss_reg.detach().item()
-        n_batches += 1  # Accumulate count so we can calculate mean later
+        if isinstance(msq_loss, (int, float)):
+            epoch_msq_loss += msq_loss
+        elif isinstance(msq_loss, torch.Tensor):
+            epoch_msq_loss += msq_loss.detach().item()
+        n_batches += 1
 
         # Collect Meter Data
         dict_meter_data['net_out'].append(net_out.detach().cpu())
@@ -615,19 +916,20 @@ def net_train(args,
                 dict_meter_data[k] = []
 
         # Garbage collection to free VRAM
-        del dict_batch_tensor, dict_batch_array, loss, reg, net_out
+        del dict_batch_tensor, dict_batch_array, net_out
 
     # Average loss and regularizer values across batches
     epoch_loss /= n_batches
-    epoch_loss = epoch_loss
     epoch_regularizer /= n_batches
+    epoch_msq_loss /= n_batches
 
     # Collect outputs and targets
     if meter is not None:
         meter = add_meter_data(meter, dict_meter_data)
 
     # Get network statistics
-    stat = {'loss': epoch_loss, 'reg': epoch_regularizer, 'net_out_min': net_out_min, 'net_out_max': net_out_max}
+    stat = {'loss': epoch_loss, 'reg': epoch_regularizer, 'msq_loss': epoch_msq_loss,
+            'net_out_min': net_out_min, 'net_out_max': net_out_max}
     if get_net_out_stat is not None:
         stat = get_net_out_stat(args, stat, dict_meter_data)
     return net, meter, stat

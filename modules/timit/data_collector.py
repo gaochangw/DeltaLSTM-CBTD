@@ -24,16 +24,8 @@ class DataPrepare:
         for idx, x in enumerate(self.labels['label39']):
             self.dict_label2int39[x] = idx
 
-        self.val_list = ['MCCS0', 'MRCZ0', 'MESD0', 'MMDH0', 'MNLS0',
-                         'MPWM0', 'MJES0', 'FKMS0', 'MPAM1', 'MKCH0',
-                         'MAJC0', 'FEDW0', 'FMCM0', 'FCAL1', 'MGJF0',
-                         'FCMH1', 'MJTC0', 'MRKO0', 'FUTB0', 'FJRE0',
-                         'MAHH0', 'MDAW1', 'MDBB0', 'FNMR0', 'FLBW0',
-                         'MCSH0', 'MJDM1', 'MERS0', 'MRGG0', 'MJBR0',
-                         'FJWB0', 'FREW0', 'MRPC0', 'MABW0', 'MCMB0',
-                         'MCTT0', 'MDRM0', 'MRJO0', 'FCRH0', 'MLJB0',
-                         'FCAU0', 'MDWA0', 'FJAS0', 'FRNG0', 'FCMH0',
-                         'MFGK0', 'MRMS1', 'FGWR0', 'MRJM3', 'MTDT0']
+        # Validation speakers from NLTK TIMIT subset (2 speakers)
+        self.val_list = ['FBLV0', 'MADD0']
 
     def phn_text_to_int_str(self, str_phn_text, dict_label2int):
         list_phn_text = str_phn_text.split()
@@ -106,12 +98,18 @@ class DataPrepare:
                 file_name = file_path.split('/')[-1].split('.')[0]
                 speaker_id = file_path.split('/')[-2]
 
-                sph = SPHFile(file_path)
-                sph.write_wav(filename=file_path.replace(".WAV", ".WAVN"))
+                wavn_path = file_path.replace(".WAV", ".WAVN")
+                if not os.path.exists(wavn_path):
+                    sph = SPHFile(file_path)
+                    sph.write_wav(filename=wavn_path)
 
                 if file_name.find('SA') == -1:  # Remove SA utterance from dataset
                     if group == 'train':
-                        train_group.append(file_path)
+                        # Check if speaker should be in val set
+                        if speaker_id in self.val_list:
+                            val_group.append(file_path)
+                        else:
+                            train_group.append(file_path)
                     elif speaker_id in list_test:
                         test_group.append(file_path)
                     elif speaker_id in self.val_list:

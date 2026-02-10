@@ -1,0 +1,13 @@
+label,idx
+_silence_,0
+_unknown_,1
+yes,2
+no,3
+up,4
+down,5
+left,6
+right,7
+on,8
+off,9
+stop,10
+go,11

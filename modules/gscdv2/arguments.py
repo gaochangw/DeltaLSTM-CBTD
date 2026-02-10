@@ -1,0 +1,120 @@
+###########################################################################################################
+# Google Speech Commands Dataset v2 (GSCDv2) - 12-class Keyword Spotting
+###########################################################################################################
+
+
+def add_args(parser):
+    # Basic Settings
+    parser.add_argument('--filename', default='', help='Filename to save model and log to.')
+    parser.add_argument('--phase', default='pretrain', help='Phase of a step')
+    # Dataset
+    parser.add_argument('--data_dir', default=None, help='Directory path that saves datasets')
+    parser.add_argument('--trainfile', default=None, help='HDF5 File of training set')
+    parser.add_argument('--valfile', default=None, help='HDF5 File of validation set')
+    parser.add_argument('--testfile', default=None, help='HDF5 File of testing set')
+    parser.add_argument('--labelfile', default='label_list.csv',
+                        help='CSV File of keyword & Label pairs')
+    parser.add_argument('--zero_padding', default='head',
+                        help='Method of padding zeros to samples in a batch')
+    # Feature Extraction
+    parser.add_argument('--feat_name', default='', help='A string append to the dataset file names')
+    parser.add_argument('--frame_size', default=0.025, type=float, help='Frame size of signals')
+    parser.add_argument('--frame_stride', default=0.010, type=float, help='Frame stride of signals')
+    parser.add_argument('--n_filt', default=40, type=int, help='Number of log filter banks')
+    parser.add_argument('--nfft', default=512, type=int, help='Number of FFT points')
+    parser.add_argument('--gain_ctrl', default=0, type=int,
+                        help='Real-time frame normalization for audio gain control')
+    parser.add_argument('--gradient', default=1, type=int,
+                        help='Append gradient of filter banks to features')
+    # Hyperparameters
+    parser.add_argument('--seed', default=4, type=int,
+                        help='Initialize the random seed of the run (for reproducibility).')
+    parser.add_argument('--batch_size', default=64, type=int, help='Batch size for training.')
+    parser.add_argument('--batch_size_eval', default=256, type=int, help='Batch size for evaluation.')
+    parser.add_argument('--n_epochs', default=50, type=int, help='Number of epochs to train for.')
+    parser.add_argument('--n_epochs_retrain', default=2, type=int, help='Number of epochs for retrain phase.')
+    parser.add_argument('--loss', default='ce', help='Loss function (ce for cross-entropy).')
+    parser.add_argument('--opt', default='ADAMW', help='Which optimizer to use (ADAM or SGD)')
+    parser.add_argument('--lr_schedule', default=1, type=int, help='Whether enable learning rate scheduling')
+    parser.add_argument('--lr', default=1e-3, type=float, help='Learning rate')
+    parser.add_argument('--lr_end', default=1e-5, type=float, help='End learning rate')
+    parser.add_argument('--decay_factor', default=0.5, type=float, help='Learning rate decay factor')
+    parser.add_argument('--patience', default=5, type=float, help='Patience for LR scheduler')
+    parser.add_argument('--beta', default=0, type=float, help='Regularization coefficient')
+    parser.add_argument('--clip_grad_norm_max', default=100, type=float, help='Gradient clipping max norm')
+    # General Network Settings
+    parser.add_argument('--hid_type', default='LSTM', help='Classification layer type')
+    parser.add_argument('--hid_type_pretrain', default='LSTM',
+                        help='Pretrain model type to be load')
+    parser.add_argument('--hid_layers', default=1, type=int, help='Number of classification layers')
+    parser.add_argument('--hid_size', default=128, type=int, help='Size of classification layers')
+    parser.add_argument('--hid_dropout', default=0, type=float,
+                        help='Dropout rate of the classification layer')
+    parser.add_argument('--fc_type', default='FC', help='FC layer type')
+    parser.add_argument('--fc_extra_size', default=0, type=int,
+                        help='Whether add FC layer after the classification layer')
+    parser.add_argument('--weight_decay', default=1e-5, type=float,
+                        help='Factor of weight decay')
+    # Convolutional Network Settings
+    parser.add_argument('--context_window_size', default=256, type=int, help='Context window size')
+    # Delta Network Settings
+    parser.add_argument('--hardsigmoid', default=0, type=int, help='Use hardsigmoid')
+    parser.add_argument('--hardtanh', default=0, type=int, help='Use hardtanh')
+    parser.add_argument('--qa', default=1, type=int, help='Quantize activations')
+    parser.add_argument('--aqi', default=8, type=int, help='Activation integer bits')
+    parser.add_argument('--aqf', default=8, type=int, help='Activation fractional bits')
+    parser.add_argument('--qw', default=1, type=int, help='Quantize weights')
+    parser.add_argument('--wqi', default=1, type=int, help='Weight integer bits')
+    parser.add_argument('--wqf', default=7, type=int, help='Weight fractional bits')
+    parser.add_argument('--nqi', default=2, type=int, help='LUT output integer bits')
+    parser.add_argument('--nqf', default=4, type=int, help='LUT output fractional bits')
+    parser.add_argument('--qa_fc_extra', default=1, type=int, help='Quantize extra FC activations')
+    parser.add_argument('--aqi_fc_extra', default=8, type=int, help='Extra FC activation integer bits')
+    parser.add_argument('--aqf_fc_extra', default=8, type=int, help='Extra FC activation fractional bits')
+    parser.add_argument('--qa_fc_final', default=1, type=int, help='Quantize final FC activations')
+    parser.add_argument('--aqi_fc_final', default=8, type=int, help='Final FC activation integer bits')
+    parser.add_argument('--aqf_fc_final', default=8, type=int, help='Final FC activation fractional bits')
+    parser.add_argument('--th_x', default=0.25, type=float, help='Delta threshold for input')
+    parser.add_argument('--th_h', default=0.25, type=float, help='Delta threshold for hidden')
+    # Gradient quantization (for compatibility)
+    parser.add_argument('--qg', default=0, type=int, help='Quantize gradients')
+    parser.add_argument('--gqi', default=8, type=int, help='Gradient integer bits')
+    parser.add_argument('--gqf', default=8, type=int, help='Gradient fractional bits')
+    # DeltaLSTM
+    parser.add_argument('--cbtd', default=1, type=int, help='Use Column-Balanced Weight Dropout')
+    parser.add_argument('--gamma_rnn', default=0.94, type=float, help='Target sparsity of RNN layer')
+    parser.add_argument('--gamma_fc', default=0.94, type=float, help='Target sparsity of FC Layer')
+    parser.add_argument('--alpha_anneal_epoch', default=30, type=int, help='Epochs for alpha to reach 1')
+    parser.add_argument('--balance_pe', default=1, type=float, help='Balance workload of PEs in CBTD')
+    parser.add_argument('--num_array', default=1, type=int, help='Number of MAC Arrays (M)')
+    parser.add_argument('--num_array_pe', default=4, type=int, help='Number of PEs per MAC Array (N)')
+    # MSQ Bit Sparsification (Ref: MSQ, ICCV 2025)
+    parser.add_argument('--msq_lambda', default=0.0, type=float,
+                        help='MSQ LSB regularization weight (0=disabled)')
+    parser.add_argument('--msq_k', default=2, type=int,
+                        help='Number of LSBs to penalize (default 2)')
+    parser.add_argument('--msq_target', default='rnn', type=str,
+                        help='Layers for MSQ: rnn, fc, or all')
+    parser.add_argument('--msq_anneal', default=0, type=int,
+                        help='Anneal MSQ lambda over alpha_anneal_epoch (0=constant, 1=linear ramp)')
+    # BitWave Sign-Magnitude (Ref: BitWave, HPCA 2025)
+    parser.add_argument('--bitwave', default=0, type=int,
+                        help='Use sign-magnitude for bit sparsity analysis (0=two\'s complement, 1=sign-magnitude)')
+    # Training Process
+    parser.add_argument('--step', default='train', help='Which step to start from')
+    parser.add_argument('--run_through', default=1, type=int, help='Whether run through rest steps')
+    parser.add_argument('--eval_val', default=1, type=int, help='Whether eval val set during training')
+    parser.add_argument('--score_val', default=1, type=int, help='Whether score val set during training')
+    parser.add_argument('--eval_test', default=1, type=int, help='Whether eval test set during training')
+    parser.add_argument('--score_test', default=1, type=int, help='Whether score test set during training')
+    parser.add_argument('--eval_sp', default=1, type=int, help='Whether run through rest steps')
+    parser.add_argument('--iter_mode', default='batch', help='Dynamic batch size.')
+    parser.add_argument('--normalization', default=1, type=int, help='Normalize features')
+    parser.add_argument('--pretrain_model', default=None, help='Custom pretrained model')
+    parser.add_argument('--use_cuda', default=1, type=int, help='Use GPU yes/no')
+    parser.add_argument('--gpu_device', default=0, type=int, help='Select GPU')
+    # KWS specific
+    parser.add_argument('--n_classes', default=12, type=int, help='Number of classes (12 for KWS)')
+    parser.add_argument('--sample_rate', default=16000, type=int, help='Audio sample rate')
+    parser.add_argument('--audio_length', default=1.0, type=float, help='Audio clip length in seconds')
+    return parser

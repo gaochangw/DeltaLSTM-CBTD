@@ -2,28 +2,11 @@
 PyTorch Implementation of DeltaLSTM (./nnmodels/deltalstm.py) and CBTD (./utils/util.py)
 
 # Prerequisite
-Install Miniconda
-```
-wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
-chmod +x Miniconda3-latest-Linux-x86_64.sh
-./Miniconda3-latest-Linux-x86_64.sh
-```
+Requires Miniconda with Python 3.13 and PyTorch (latest stable) installed in the base environment.
 
-Create an environment using the following command:
+Install additional dependencies:
 ```
-conda create -n pt python=3.8 numpy matplotlib pandas tqdm h5py \
-    scipy jupyter scikit-learn tensorboard editdistance \
-    pytorch torchvision torchaudio cudatoolkit=11.3 -c pytorch
-
-```
-Activate the environment before running the script.
-```
-conda activate pt
-```
-
-Install Pip Packages.
-```
-pip install sphfile
+pip install numpy matplotlib pandas tqdm h5py scipy scikit-learn tensorboard editdistance sphfile
 ```
 
 #  Run

@@ -1,6 +1,33 @@
+"""
+Logging utilities for TIMIT phoneme recognition.
+Integrates torchstat2 for comprehensive model statistics.
+"""
 import warnings
 import torch
+import torch.nn as nn
 import pandas as pd
+
+try:
+    from rich.console import Console
+    from rich.table import Table
+    from rich.panel import Panel
+    from rich.text import Text
+    from rich import box
+    RICH_AVAILABLE = True
+    console = Console()
+except ImportError:
+    RICH_AVAILABLE = False
+    console = None
+
+# Import model stats utility (integrates torchstat2)
+try:
+    from utils.model_stats import (
+        analyze_rnn_model, get_model_summary_dict,
+        format_number, RNNModelStats
+    )
+    MODEL_STATS_AVAILABLE = True
+except ImportError:
+    MODEL_STATS_AVAILABLE = False
 
 
 class Logger:
@@ -107,6 +134,10 @@ def gen_model_id(args, n_features):
     # Add info for Delta Networks
     if 'Delta' in args.hid_type or args.hid_type in ['dLSTM']:
         dict_model_id = dict(list(dict_model_id.items()) + list(dict_deltanet.items()))
+
+    if getattr(args, 'msq_lambda', 0) > 0:
+        dict_model_id['MSQL'] = f"{args.msq_lambda:.0e}"
+        dict_model_id['MSQK'] = f"{getattr(args, 'msq_k', 2):d}"
 
     # Model ID
     list_model_id = []
@@ -382,3 +413,203 @@ def save_best_model(args,
             torch.save(net.state_dict(), save_file)
             print('>>> saving best model from epoch %d to %s' % (epoch, save_file))
     return best_val
+
+
+def print_training_header(args, n_features, n_classes, n_param):
+    """Print training header with model info."""
+    if RICH_AVAILABLE:
+        console.print()
+        header_table = Table(title="Model Configuration", box=box.DOUBLE_EDGE, show_header=False)
+        header_table.add_column("Property", style="bold cyan")
+        header_table.add_column("Value", style="white")
+
+        header_table.add_row("Dataset", args.dataset_name)
+        header_table.add_row("Model Type", args.hid_type)
+        header_table.add_row("Hidden Layers", str(args.hid_layers))
+        header_table.add_row("Hidden Size", str(args.hid_size))
+        header_table.add_row("Input Features", str(n_features))
+        header_table.add_row("Output Classes", str(n_classes))
+        header_table.add_row("Total Parameters", f"{n_param:,}")
+        header_table.add_row("Batch Size", str(args.batch_size))
+        header_table.add_row("Learning Rate", str(args.lr))
+        header_table.add_row("Epochs", str(args.n_epochs))
+
+        console.print(header_table)
+        console.print()
+    else:
+        print("=" * 60)
+        print(f"Dataset: {args.dataset_name}")
+        print(f"Model Type: {args.hid_type}")
+        print(f"Hidden: {args.hid_layers} layers x {args.hid_size} units")
+        print(f"Input Features: {n_features}, Output Classes: {n_classes}")
+        print(f"Total Parameters: {n_param:,}")
+        print(f"Batch Size: {args.batch_size}, LR: {args.lr}, Epochs: {args.n_epochs}")
+        print("=" * 60)
+
+
+def print_model_analysis(net, args, n_features, seq_len=777, device='cpu'):
+    """
+    Print detailed model analysis using torchstat2-based model stats.
+
+    Args:
+        net: PyTorch model
+        args: Arguments namespace
+        n_features: Number of input features
+        seq_len: Sequence length for RNN models (TIMIT avg ~777 frames)
+        device: Device to run analysis on
+    """
+    if not MODEL_STATS_AVAILABLE:
+        print("Model stats not available. Skipping detailed analysis.")
+        return None
+
+    try:
+        model_name = f"{args.hid_type} ({args.hid_layers}L x {args.hid_size}H)"
+        stats = analyze_rnn_model(
+            net,
+            seq_len=seq_len,
+            n_features=n_features,
+            batch_size=1,
+            device=device,
+            model_name=model_name,
+            args=args,
+            print_stats=True
+        )
+        return stats
+
+    except Exception as e:
+        print(f"Model analysis failed: {e}")
+        return None
+
+
+def print_sparsity_analysis(net, args):
+    """Print detailed sparsity analysis for the model."""
+    if not RICH_AVAILABLE:
+        # Plain text version
+        print("\n" + "=" * 60)
+        print("WEIGHT SPARSITY ANALYSIS")
+        print("=" * 60)
+
+        total_params = 0
+        total_nonzero = 0
+
+        for name, param in net.named_parameters():
+            if 'weight' in name:
+                n_total = param.data.numel()
+                n_nonzero = torch.count_nonzero(param.data).item()
+                sparsity = 1 - (n_nonzero / n_total) if n_total > 0 else 0
+                total_params += n_total
+                total_nonzero += n_nonzero
+                print(f"  {name[:35]:<35} {n_total:>10,} {n_nonzero:>10,} {sparsity*100:>6.1f}%")
+
+        overall_sparsity = 1 - (total_nonzero / total_params) if total_params > 0 else 0
+        print("-" * 60)
+        print(f"  {'TOTAL':<35} {total_params:>10,} {total_nonzero:>10,} {overall_sparsity*100:>6.1f}%")
+        return
+
+    # Rich version
+    console.print()
+    console.print(Panel("[bold yellow]Weight Sparsity Analysis[/]", border_style="yellow"))
+
+    sparsity_table = Table(box=box.ROUNDED, show_header=True, header_style="bold yellow")
+    sparsity_table.add_column("Layer", style="bold", width=35)
+    sparsity_table.add_column("Shape", justify="center", width=20)
+    sparsity_table.add_column("Total", justify="right", width=12)
+    sparsity_table.add_column("Non-zero", justify="right", width=12)
+    sparsity_table.add_column("Sparsity", justify="right", width=10)
+
+    total_params = 0
+    total_nonzero = 0
+
+    for name, param in net.named_parameters():
+        if 'weight' in name:
+            n_total = param.data.numel()
+            n_nonzero = torch.count_nonzero(param.data).item()
+            sparsity = 1 - (n_nonzero / n_total) if n_total > 0 else 0
+
+            total_params += n_total
+            total_nonzero += n_nonzero
+
+            # Color code sparsity
+            if sparsity > 0.8:
+                sp_style = "green"
+            elif sparsity > 0.5:
+                sp_style = "yellow"
+            elif sparsity > 0.2:
+                sp_style = "orange1"
+            else:
+                sp_style = "white"
+
+            sparsity_table.add_row(
+                name[:35],
+                str(list(param.shape)),
+                f"{n_total:,}",
+                f"{n_nonzero:,}",
+                f"[{sp_style}]{sparsity*100:.1f}%[/]"
+            )
+
+    # Add totals row
+    overall_sparsity = 1 - (total_nonzero / total_params) if total_params > 0 else 0
+    sparsity_table.add_row("", "", "", "", "")
+    sparsity_table.add_row(
+        "[bold]TOTAL[/]",
+        "",
+        f"[bold]{total_params:,}[/]",
+        f"[bold]{total_nonzero:,}[/]",
+        f"[bold]{overall_sparsity*100:.1f}%[/]"
+    )
+
+    console.print(sparsity_table)
+
+
+def print_delta_stats(net, test_stat=None):
+    """Print DeltaLSTM temporal sparsity statistics."""
+    if not hasattr(net, 'rnn') or not hasattr(net.rnn, 'get_temporal_sparsity'):
+        return
+
+    try:
+        # Use test_stat if available (from actual evaluation), otherwise use model's internal stats
+        if test_stat and 'sp_dx' in test_stat:
+            sp_dx = test_stat['sp_dx']
+            sp_dh = test_stat['sp_dh']
+            sp_dxh = test_stat.get('sp_dxh', 0)
+        else:
+            stats = net.rnn.get_temporal_sparsity()
+            sp_dx = stats.get('sparsity_delta_x', 0)
+            sp_dh = stats.get('sparsity_delta_h', 0)
+            sp_dxh = stats.get('sparsity_delta', 0)
+
+        if not RICH_AVAILABLE:
+            print("\n" + "=" * 60)
+            print("TEMPORAL SPARSITY STATISTICS")
+            print("=" * 60)
+            print(f"  Input Delta Sparsity (Δx):   {sp_dx*100:.2f}%")
+            print(f"  Hidden Delta Sparsity (Δh):  {sp_dh*100:.2f}%")
+            print(f"  Combined Sparsity (Δxh):     {sp_dxh*100:.2f}%")
+            return
+
+        console.print()
+        console.print(Panel("[bold orange1]Temporal Sparsity Statistics[/]", border_style="orange1"))
+
+        delta_table = Table(box=box.ROUNDED, show_header=False)
+        delta_table.add_column("Metric", style="bold orange1", width=30)
+        delta_table.add_column("Value", style="white", width=15)
+
+        delta_table.add_row("Input Delta Sparsity (Δx)", f"{sp_dx*100:.2f}%")
+        delta_table.add_row("Hidden Delta Sparsity (Δh)", f"{sp_dh*100:.2f}%")
+        delta_table.add_row("Combined Sparsity (Δxh)", f"[bold]{sp_dxh*100:.2f}%[/]")
+
+        console.print(delta_table)
+
+        # Visualize sparsity as bar
+        bar_width = 40
+        filled_x = int(sp_dx * bar_width)
+        filled_h = int(sp_dh * bar_width)
+        filled_xh = int(sp_dxh * bar_width)
+
+        console.print()
+        console.print(f"  Δx:  [green]{'█' * filled_x}[/][dim]{'░' * (bar_width - filled_x)}[/] {sp_dx*100:.1f}%")
+        console.print(f"  Δh:  [green]{'█' * filled_h}[/][dim]{'░' * (bar_width - filled_h)}[/] {sp_dh*100:.1f}%")
+        console.print(f"  Δxh: [cyan]{'█' * filled_xh}[/][dim]{'░' * (bar_width - filled_xh)}[/] {sp_dxh*100:.1f}%")
+
+    except Exception as e:
+        print(f"Failed to get delta stats: {e}")

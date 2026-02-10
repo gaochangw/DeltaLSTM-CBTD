@@ -32,6 +32,7 @@ def add_args(parser):
     parser.add_argument('--batch_size', default=32, type=int, help='Batch size for training.')
     parser.add_argument('--batch_size_eval', default=256, type=int, help='Batch size for evaluation.')
     parser.add_argument('--n_epochs', default=50, type=int, help='Number of epochs to train for.')
+    parser.add_argument('--n_epochs_retrain', default=10, type=int, help='Number of epochs for retrain phase.')
     parser.add_argument('--loss', default='ctc', help='Loss function.')
     parser.add_argument('--opt', default='ADAMW', help='Which optimizer to use (ADAM or SGD)')
     parser.add_argument('--lr_schedule', default=1, type=int, help='Whether enable learning rate scheduling')
@@ -100,6 +101,18 @@ def add_args(parser):
     parser.add_argument('--balance_pe', default=1, type=float, help='Balance the workload of PEs in CBTD')
     parser.add_argument('--num_array', default=8, type=int, help='Number of MAC Arrays (M)')
     parser.add_argument('--num_array_pe', default=64, type=int, help='Number of PEs per MAC Array (N)')
+    # MSQ Bit Sparsification (Ref: MSQ, ICCV 2025)
+    parser.add_argument('--msq_lambda', default=0.0, type=float,
+                        help='MSQ LSB regularization weight (0=disabled)')
+    parser.add_argument('--msq_k', default=2, type=int,
+                        help='Number of LSBs to penalize (default 2)')
+    parser.add_argument('--msq_target', default='rnn', type=str,
+                        help='Layers for MSQ: rnn, fc, or all')
+    parser.add_argument('--msq_anneal', default=0, type=int,
+                        help='Anneal MSQ lambda over alpha_anneal_epoch (0=constant, 1=linear ramp)')
+    # BitWave Sign-Magnitude (Ref: BitWave, HPCA 2025)
+    parser.add_argument('--bitwave', default=0, type=int,
+                        help='Use sign-magnitude for bit sparsity analysis (0=two\'s complement, 1=sign-magnitude)')
     # Scoring Settings
     parser.add_argument('--smooth', default=1, type=int, help='Whether smooth the posterior over time')
     parser.add_argument('--smooth_window_size', default=60, type=int, help='Posterior smooth window size')
